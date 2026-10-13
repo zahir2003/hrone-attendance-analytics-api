@@ -19,7 +19,6 @@ A REST API built with FastAPI and MongoDB for employee management, attendance tr
 - MongoDB 6.0 or newer
 - Dependencies listed in `requirements.txt`
 
-
 ## Local Setup
 
 ### 1. Create and activate a virtual environment
@@ -83,10 +82,6 @@ Interactive documentation: `http://127.0.0.1:8000/docs`
 ### 6. Run automated tests
 
 ```powershell
-python -m pytest -v
-```
-
-```bash
 python -m pytest -v
 ```
 
