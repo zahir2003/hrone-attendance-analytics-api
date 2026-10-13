@@ -1,4 +1,3 @@
-
 # Technical Decisions
 
 1. **Indexes.** I created a unique index on `emp_code` to prevent duplicate employees and a compound index on `department` and `emp_code` for department filtering and sorting. For attendance, I used a unique index on `emp_code` and `date` to prevent duplicate daily records, plus indexes for date sorting and status-based queries. I also added an index on `joined_on` to support department summary queries. I considered relying on collection scans but rejected that approach because it becomes inefficient as the dataset grows.
