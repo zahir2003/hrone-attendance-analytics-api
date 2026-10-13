@@ -1,0 +1,37 @@
+# Python virtual environments
+Attendence/
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Editor and IDE files
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Confidential assignment document
+PROBLEM_STATEMENT.docx
