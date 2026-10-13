@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from typing import Optional, Literal
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pymongo import MongoClient, ReturnDocument
@@ -27,7 +28,17 @@ db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_indexes()
+    yield
+
+
+app = FastAPI(
+    title="Employee Attendance & Analytics API",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -79,11 +90,6 @@ def create_indexes():
         [("status", 1), ("date", -1), ("emp_code", 1)],
         name="attendance_status_date_emp_code",
     )
-
-
-@app.on_event("startup")
-def initialize_database():
-    create_indexes()
 
 
 def compute_late_minutes(
