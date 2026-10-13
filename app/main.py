@@ -8,6 +8,7 @@ This file was written quickly by a colleague who has left the company. The happy
 works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
+
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -20,20 +21,32 @@ from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from decimal import Decimal, ROUND_HALF_UP
 
-
+# Load optional settings from a local .env file into environment variables.
+# This keeps database configuration outside the source code and supports local development.
 load_dotenv()
 
+# Create the MongoDB client using an environment override or the local default.
+# MongoClient manages database connections; the database handle below selects the app's database.
 client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+# All employee and attendance queries use this configured database handle.
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
+# The business rules use India Standard Time (UTC+05:30) for shift and attendance dates.
 IST = timezone(timedelta(hours=5, minutes=30))
 
+
+# Purpose: Controls the application's startup and shutdown period. Creating indexes at startup
+# prepares MongoDB for the API's expected queries and helps enforce uniqueness before requests
+# are handled.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manage FastAPI startup and shutdown. Before the application accepts requests, create the MongoDB indexes required for uniqueness and efficient queries. The yield marks the period during which the application is running."""
     create_indexes()
     yield
 
 
+# Create the FastAPI application object. Its metadata appears in /docs and the OpenAPI schema.
+# The lifespan handler runs create_indexes() during startup, before requests are served.
 app = FastAPI(
     title="Employee Attendance & Analytics API",
     version="2.0.0",
@@ -44,6 +57,8 @@ app = FastAPI(
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+# Purpose: Converts a Python datetime into the API's timestamp format: milliseconds since 1
+# January 1970 UTC. A shared helper keeps timestamp responses consistent.
 def to_epoch_ms(value: datetime) -> int:
     """Convert a datetime to epoch milliseconds."""
     if value.tzinfo is None:
@@ -52,8 +67,12 @@ def to_epoch_ms(value: datetime) -> int:
     return int(value.timestamp() * 1000)
 
 
+# Purpose: Creates the indexes used by the application. Indexes help MongoDB find records
+# faster, while unique indexes reject duplicate employee codes and duplicate employee/date
+# attendance records.
 def create_indexes():
     # Each employee code must be unique.
+    """Create the MongoDB indexes used by this API. Unique indexes prevent duplicate employee codes and duplicate attendance records per employee/date; compound indexes support common filters and sort orders."""
     db.employees.create_index(
         [("emp_code", 1)],
         unique=True,
@@ -92,11 +111,14 @@ def create_indexes():
     )
 
 
+# Purpose: Compares the actual punch-in time with the employee's scheduled shift start. It
+# applies the 10-minute grace period and returns whole late minutes for attendance reports.
 def compute_late_minutes(
     punch_in: datetime,
     shift_start: str,
     attendance_date: str,
 ) -> int:
+    """Calculate how many whole minutes an employee arrived late compared with the scheduled shift start. The first 10 minutes are a grace period, so lateness is zero through exactly 600 seconds."""
     hours, minutes = map(int, shift_start.split(":"))
 
     shift_date = datetime.strptime(attendance_date, "%Y-%m-%d").date()
@@ -119,17 +141,28 @@ def compute_late_minutes(
     return seconds_late // 60
 
 
+# Purpose: Calculates the time between punch-in and punch-out in hours. This helper uses
+# Python's built-in round function; check which rounding rule is required before using it for
+# business calculations.
 def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
+    """Calculate elapsed time between punch-in and punch-out in hours, rounded to two decimal places using Python's standard round behavior."""
     return round((punch_out - punch_in).total_seconds() / 3600, 2)
 
 
+# Purpose: Calculates whole minutes after the scheduled shift end. It returns zero when the
+# employee leaves at or before shift end.
 def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
+    """Calculate whole minutes worked after the scheduled shift end. Return zero when punch-out is before or exactly at the shift end."""
     h, m = map(int, shift_end.split(":"))
     end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
     return max(0, int((punch_out - end).total_seconds() / 60))
 
 
+# Purpose: Calculates total hours worked and uses Decimal with ROUND_HALF_UP so halfway values
+# round in a predictable way. Punch-out and regularization use this helper for the stored work-
+# hours value.
 def calculate_work_hours(punch_in: datetime, punch_out: datetime) -> float:
+    """Calculate elapsed work hours and round to two decimal places using Decimal with ROUND_HALF_UP, giving predictable financial-style rounding at half-way values."""
     seconds = (punch_out - punch_in).total_seconds()
 
     hours = Decimal(str(seconds)) / Decimal("3600")
@@ -142,7 +175,12 @@ def calculate_work_hours(punch_in: datetime, punch_out: datetime) -> float:
 # --------------------------------------------------------------------------- #
 
 
+# Purpose: Defines the request body accepted when a new employee is created. Pydantic checks
+# field types and formats before the endpoint reaches the database, so invalid input can be
+# rejected early.
 class EmployeeIn(BaseModel):
+    """Pydantic request model for creating an employee. Field constraints validate employee-code format, name, email, department, shift times, and joining date before the endpoint writes to MongoDB."""
+
     emp_code: str = Field(pattern=r"^EMP\d{4,6}$")
     name: str = Field(min_length=1, max_length=100)
     email: str = Field(
@@ -160,9 +198,12 @@ class EmployeeIn(BaseModel):
     )
     joined_on: str
 
+    # Purpose: Checks that joined_on is a real date written exactly as YYYY-MM-DD. This prevents
+    # impossible dates and inconsistent date strings from entering the employee collection.
     @field_validator("joined_on")
     @classmethod
     def validate_joined_on(cls, value):
+        """Validate that joined_on is a real calendar date in YYYY-MM-DD format, not merely a string that resembles a date."""
         try:
             parsed = datetime.strptime(value, "%Y-%m-%d")
             if parsed.strftime("%Y-%m-%d") != value:
@@ -171,21 +212,32 @@ class EmployeeIn(BaseModel):
             raise ValueError("joined_on must be a valid YYYY-MM-DD date")
         return value
 
+    # Purpose: Rejects names or department values made only of spaces. It does not silently rewrite
+    # valid text; it simply checks that meaningful text was provided.
     @field_validator("name", "department")
     @classmethod
     def validate_nonblank(cls, value):
+        """Reject names and department values that contain only whitespace, while returning the supplied nonblank value unchanged."""
         if not value.strip():
             raise ValueError("Field must not be blank")
         return value
 
+    # Purpose: Checks the relationship between shift_start and shift_end. A shift with identical
+    # start and end times is rejected because it would be ambiguous or zero-length.
     @model_validator(mode="after")
     def validate_shift(self):
+        """Ensure shift_start and shift_end are not identical. This prevents an employee from being configured with a zero-length shift."""
         if self.shift_start == self.shift_end:
             raise ValueError("shift_start must differ from shift_end")
         return self
 
 
+# Purpose: Describes and validates the JSON body for a punch-in request. The timestamp is
+# optional, but when supplied it must be an integer in the allowed epoch-millisecond range;
+# status is limited to supported values.
 class PunchInIn(BaseModel):
+    """Pydantic request model for punch-in. It accepts an employee code, an optional epoch-millisecond timestamp, and an allowed attendance status; omitted timestamps use the current time."""
+
     emp_code: str
     punched_at: Optional[int] = Field(
         default=None,
@@ -196,7 +248,12 @@ class PunchInIn(BaseModel):
     status: Literal["PRESENT", "WFH", "ON_DUTY"] = "PRESENT"
 
 
+# Purpose: Describes the JSON body for punch-out. It accepts an employee code and optional
+# bounded epoch-millisecond timestamp, allowing tests or clients to provide a specific punch-out
+# time.
 class PunchOutIn(BaseModel):
+    """Pydantic request model for punch-out. It accepts an employee code and an optional epoch-millisecond timestamp, with bounds to reject implausible timestamp values."""
+
     emp_code: str
     punched_at: Optional[int] = Field(
         default=None,
@@ -206,7 +263,12 @@ class PunchOutIn(BaseModel):
     )
 
 
+# Purpose: Describes a correction request for an existing attendance record. It captures the
+# reason and operator, plus any optional status or timestamp changes, so corrections can be
+# validated and audited.
 class RegularizeRequest(BaseModel):
+    """Pydantic request model for correcting an existing attendance record. It validates the reason and operator name, and optionally accepts a status and corrected punch timestamps."""
+
     reason: str = Field(min_length=5, max_length=200)
     regularized_by: str = Field(min_length=1, max_length=50)
 
@@ -226,9 +288,12 @@ class RegularizeRequest(BaseModel):
         le=4_102_444_800_000,
     )
 
+    # Purpose: Ensures the correction reason and operator name contain actual text. This makes the
+    # audit trail useful by preventing empty explanations or unidentified operators.
     @field_validator("reason", "regularized_by")
     @classmethod
     def reject_blank_text(cls, value: str) -> str:
+        """Reject a regularization reason or operator name that is empty or whitespace-only so every correction has an explanation and an identified actor."""
         if not value.strip():
             raise ValueError("This field cannot be blank")
         return value
@@ -239,8 +304,11 @@ class RegularizeRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+# Purpose: Implements GET /health. It pings MongoDB to check whether the database is reachable
+# and returns a service-unavailable response when the database check fails.
 @app.get("/health")
 def health():
+    """Health-check endpoint (GET /health). Ping MongoDB and return status=ok when it responds; return HTTP 503 if the database is unavailable."""
     try:
         client.admin.command("ping")
         return {"status": "ok"}
@@ -251,8 +319,11 @@ def health():
         )
 
 
+# Purpose: Implements POST /employees. The validated request becomes a MongoDB document; a
+# creation timestamp is added, and a duplicate employee code is reported as HTTP 409 Conflict.
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
+    """Create-employee endpoint (POST /employees). Validate the request through EmployeeIn, add a creation timestamp, insert the employee, and return HTTP 409 if the unique employee code already exists."""
     doc = body.model_dump()
     doc["created_at"] = datetime.now(IST)
 
@@ -269,6 +340,9 @@ def create_employee(body: EmployeeIn):
     return doc
 
 
+# Purpose: Implements GET /employees. It supports an optional department filter and page-based
+# results, counts matching records, sorts by employee code, and returns pagination metadata with
+# the items.
 @app.get("/employees")
 def list_employees(
     department: Optional[str] = None,
@@ -276,6 +350,7 @@ def list_employees(
     page_size: int = 20,
 ):
     # Validate pagination parameters.
+    """List-employees endpoint (GET /employees). Supports optional exact department filtering and bounded pagination, returns a total count, sorts by employee code, and converts timestamps to epoch milliseconds."""
     if page < 1:
         raise HTTPException(
             status_code=422,
@@ -319,6 +394,9 @@ def list_employees(
     }
 
 
+# Purpose: Implements GET /attendance. It builds a MongoDB filter from optional employee, date-
+# range, and status parameters, validates pagination and dates, and converts stored timestamps
+# to the API's millisecond format.
 @app.get("/attendance")
 def list_attendance(
     emp_code: Optional[str] = None,
@@ -328,6 +406,7 @@ def list_attendance(
     page: int = 1,
     page_size: int = 20,
 ):
+    """List-attendance endpoint (GET /attendance). Filter attendance by employee, date range, and status; validate query parameters, paginate in a stable order, and convert stored timestamps—including audit history timestamps—to epoch milliseconds."""
     if page < 1:
         raise HTTPException(
             status_code=422,
@@ -342,7 +421,10 @@ def list_attendance(
 
     if date_from:
         try:
-            if datetime.strptime(date_from, "%Y-%m-%d").strftime("%Y-%m-%d") != date_from:
+            if (
+                datetime.strptime(date_from, "%Y-%m-%d").strftime("%Y-%m-%d")
+                != date_from
+            ):
                 raise ValueError
         except ValueError:
             raise HTTPException(
@@ -429,9 +511,13 @@ def list_attendance(
     }
 
 
+# Purpose: Implements POST /attendance/punch-in. It verifies the employee, normalizes the punch
+# time, handles overnight shifts when deciding the attendance date, calculates lateness, and
+# inserts the attendance record.
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
     # Check that the employee exists.
+    """Punch-in endpoint (POST /attendance/punch-in). Confirm the employee exists, normalize the punch time to IST, determine the attendance date for day or overnight shifts, calculate lateness, and insert one record. The unique employee/date index prevents duplicate punch-ins."""
     emp = db.employees.find_one({"emp_code": body.emp_code})
 
     if emp is None:
@@ -510,9 +596,13 @@ def punch_in(body: PunchInIn):
     }
 
 
+# Purpose: Implements POST /attendance/punch-out. It finds an open punch-in, checks that punch-
+# out is after punch-in and within 24 hours, calculates work hours/overtime/half-day status, and
+# uses a conditional database update to guard against duplicate concurrent punch-outs.
 @app.post("/attendance/punch-out")
 def punch_out(body: PunchOutIn):
     # Check that the employee exists.
+    """Punch-out endpoint (POST /attendance/punch-out). Find an eligible open attendance record, validate the duration, calculate work hours/overtime/half-day status, and atomically set punch-out so concurrent requests cannot close the same record twice."""
     emp = db.employees.find_one({"emp_code": body.emp_code})
 
     if emp is None:
@@ -650,6 +740,9 @@ def punch_out(body: PunchOutIn):
     }
 
 
+# Purpose: Implements PATCH /attendance/{emp_code}/{date}. It validates a correction,
+# recalculates derived attendance values, records who changed what and why, and only updates the
+# record if the stored version has not changed in the meantime.
 @app.patch("/attendance/{emp_code}/{date}")
 def regularize_attendance(
     emp_code: str,
@@ -657,6 +750,7 @@ def regularize_attendance(
     body: RegularizeRequest,
 ):
     # Validate the attendance date.
+    """Attendance-regularization endpoint (PATCH /attendance/{emp_code}/{date}). Validate the date and employee/record, apply allowed corrections, recalculate derived fields, record who changed what and why, and use a conditional update to detect concurrent edits."""
     try:
         parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
         if parsed_date.isoformat() != date:
@@ -800,7 +894,10 @@ def regularize_attendance(
     # Build history using normalized timestamps.
     changes = {}
 
+    # Purpose: A small helper used by regularization to record only fields whose values actually
+    # changed. The before-and-after values are normalized for the API audit history.
     def add_change(field, old_value, new_value):
+        """Add a field to the regularization audit log only when its old and new values differ. Convert datetime values to epoch milliseconds so the history is JSON/API friendly."""
         if old_value != new_value:
             if isinstance(old_value, datetime):
                 old_value = to_epoch_ms(old_value)
@@ -899,9 +996,13 @@ def regularize_attendance(
     return updated
 
 
+# Purpose: Implements GET /analytics/employees/{emp_code}/monthly. It calculates eligible
+# weekdays from the month and joining date, then uses a MongoDB aggregation to summarize
+# presence, leave, lateness, overtime, and attendance percentage.
 @app.get("/analytics/employees/{emp_code}/monthly")
 def employee_monthly(emp_code: str, month: str):
     # Check the requested month format.
+    """Monthly employee analytics endpoint (GET /analytics/employees/{emp_code}/monthly). Calculate eligible weekdays from the later of the month start or joining date, then use a MongoDB aggregation to summarize attendance, leave, lateness, and overtime."""
     try:
         month_start = datetime.strptime(month, "%Y-%m")
         if month_start.strftime("%Y-%m") != month:
@@ -1076,9 +1177,13 @@ def employee_monthly(emp_code: str, month: str):
     }
 
 
+# Purpose: Implements GET /analytics/departments/summary. It starts from eligible employees,
+# joins their attendance logs for the selected month, and summarizes headcount and
+# attendance/work metrics by department.
 @app.get("/analytics/departments/summary")
 def department_summary(month: str, department: Optional[str] = None):
     # Validate the requested month.
+    """Department-summary endpoint (GET /analytics/departments/summary). Start from eligible employees so staff without attendance logs still count toward headcount, join monthly attendance records, and aggregate department-level attendance and work metrics."""
     try:
         month_start = datetime.strptime(month, "%Y-%m")
         if month_start.strftime("%Y-%m") != month:
@@ -1176,7 +1281,12 @@ def department_summary(month: str, department: Optional[str] = None):
                             },
                             {
                                 "$cond": [
-                                    {"$eq": [{"$ifNull": ["$logs.half_day", False]}, True]},
+                                    {
+                                        "$eq": [
+                                            {"$ifNull": ["$logs.half_day", False]},
+                                            True,
+                                        ]
+                                    },
                                     0.5,
                                     1,
                                 ]
@@ -1310,6 +1420,9 @@ def department_summary(month: str, department: Optional[str] = None):
     return {"month": month, "items": items}
 
 
+# Purpose: Implements GET /analytics/leaderboard/late. It totals late minutes for each employee
+# in a month, optionally filters by department, and ranks employees. Filtering before ranking
+# ensures ranks are based on the requested department.
 @app.get("/analytics/leaderboard/late")
 def late_leaderboard(
     month: str,
@@ -1317,6 +1430,7 @@ def late_leaderboard(
     department: Optional[str] = None,
 ):
     # Validate month and limit.
+    """Late-arrival leaderboard endpoint (GET /analytics/leaderboard/late). Aggregate late minutes by employee for a month, optionally filter by department before ranking, and preserve ties at the requested rank cutoff."""
     try:
         month_start = datetime.strptime(month, "%Y-%m")
         if month_start.strftime("%Y-%m") != month:
@@ -1414,6 +1528,9 @@ def late_leaderboard(
     return {"month": month, "items": items}
 
 
+# Purpose: Implements GET /analytics/departments/{department}/trend. It validates a date window
+# of at most 92 days and calculates daily headcount, attendance, lateness, attendance rate, and
+# a seven-day moving average.
 @app.get("/analytics/departments/{department}/trend")
 def department_trend(
     department: str,
@@ -1421,6 +1538,7 @@ def department_trend(
     to_date: str = Query(..., alias="to"),
 ):
     # Validate the date parameters.
+    """Department-trend endpoint (GET /analytics/departments/{department}/trend). Validate a date range of at most 92 days and aggregate daily headcount, presence, lateness, attendance rate, and a seven-day moving average."""
     try:
         start_day = datetime.strptime(from_date, "%Y-%m-%d").date()
         end_day = datetime.strptime(to_date, "%Y-%m-%d").date()
@@ -1525,7 +1643,17 @@ def department_trend(
                                         },
                                         {
                                             "$cond": [
-                                                {"$eq": [{"$ifNull": ["$half_day", False]}, True]},
+                                                {
+                                                    "$eq": [
+                                                        {
+                                                            "$ifNull": [
+                                                                "$half_day",
+                                                                False,
+                                                            ]
+                                                        },
+                                                        True,
+                                                    ]
+                                                },
                                                 0.5,
                                                 1,
                                             ]
@@ -1690,6 +1818,9 @@ def department_trend(
     return {"department": department, "items": items}
 
 
+# Purpose: Implements GET /admin/explain/{endpoint}. It runs MongoDB explain with execution
+# statistics for a limited set of supported queries, helping reviewers inspect index use and
+# query execution rather than changing business data.
 @app.get("/admin/explain/{endpoint}")
 def explain_endpoint(
     endpoint: str,
@@ -1705,6 +1836,7 @@ def explain_endpoint(
     page: int = 1,
     page_size: int = 20,
 ):
+    """Query-plan inspection endpoint (GET /admin/explain/{endpoint}). For a limited set of supported analytics/list queries, ask MongoDB for execution statistics so reviewers can inspect query plans and index use. This is a diagnostic endpoint, not a normal business operation."""
     allowed_endpoints = {
         "attendance_list",
         "employee_monthly",
@@ -1804,9 +1936,7 @@ def explain_endpoint(
             )
 
         month_end = next_month - timedelta(days=1)
-        joined_on = datetime.strptime(
-            employee["joined_on"], "%Y-%m-%d"
-        ).date()
+        joined_on = datetime.strptime(employee["joined_on"], "%Y-%m-%d").date()
 
         effective_start = max(month_start.date(), joined_on)
         effective_end = month_end.date()
@@ -2349,13 +2479,7 @@ def explain_endpoint(
                     "from": "attendance_logs",
                     "let": {"day_text": "$date_text"},
                     "pipeline": [
-                        {
-                            "$match": {
-                                "$expr": {
-                                    "$eq": ["$date", "$$day_text"]
-                                }
-                            }
-                        },
+                        {"$match": {"$expr": {"$eq": ["$date", "$$day_text"]}}},
                         {
                             "$lookup": {
                                 "from": "employees",
@@ -2377,11 +2501,7 @@ def explain_endpoint(
                                 "as": "matching_employee",
                             }
                         },
-                        {
-                            "$match": {
-                                "matching_employee.0": {"$exists": True}
-                            }
-                        },
+                        {"$match": {"matching_employee.0": {"$exists": True}}},
                         {
                             "$group": {
                                 "_id": None,
