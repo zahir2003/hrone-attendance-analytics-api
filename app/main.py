@@ -1254,27 +1254,42 @@ def department_summary(month: str, department: Optional[str] = None):
                                         ]
                                     },
                                     {
-                                        "$lt": [
+                                        "$cond": [
                                             {
-                                                "$dayOfWeek": {
-                                                    "$dateFromString": {
-                                                        "dateString": "$logs.date"
-                                                    }
-                                                }
+                                                "$eq": [
+                                                    {"$type": "$logs.date"},
+                                                    "string",
+                                                ]
                                             },
-                                            7,
-                                        ]
-                                    },
-                                    {
-                                        "$gt": [
                                             {
-                                                "$dayOfWeek": {
-                                                    "$dateFromString": {
-                                                        "dateString": "$logs.date"
-                                                    }
-                                                }
+                                                "$and": [
+                                                    {
+                                                        "$gt": [
+                                                            {
+                                                                "$dayOfWeek": {
+                                                                    "$dateFromString": {
+                                                                        "dateString": "$logs.date"
+                                                                    }
+                                                                }
+                                                            },
+                                                            1,
+                                                        ]
+                                                    },
+                                                    {
+                                                        "$lt": [
+                                                            {
+                                                                "$dayOfWeek": {
+                                                                    "$dateFromString": {
+                                                                        "dateString": "$logs.date"
+                                                                    }
+                                                                }
+                                                            },
+                                                            7,
+                                                        ]
+                                                    },
+                                                ]
                                             },
-                                            1,
+                                            False,
                                         ]
                                     },
                                 ]
