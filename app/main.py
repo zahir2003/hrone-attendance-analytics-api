@@ -953,14 +953,27 @@ def regularize_attendance(
     }
 
     # Only update if the original record has not changed meanwhile.
+    # Handle records where the history field is missing.
+    original_history = record.get("history")
+
+    concurrency_filter = {
+        "_id": record["_id"],
+        "status": old_status,
+        "punch_in": record.get("punch_in"),
+        "punch_out": record.get("punch_out"),
+    }
+
+    if original_history is None:
+        # Match documents where history is missing or explicitly null.
+        concurrency_filter["$or"] = [
+            {"history": {"$exists": False}},
+            {"history": None},
+        ]
+    else:
+        concurrency_filter["history"] = original_history
+
     result = db.attendance_logs.update_one(
-        {
-            "_id": record["_id"],
-            "status": old_status,
-            "punch_in": record.get("punch_in"),
-            "punch_out": record.get("punch_out"),
-            "history": record.get("history", []),
-        },
+        concurrency_filter,
         {
             "$set": update_fields,
             "$push": {"history": history_entry},
@@ -973,10 +986,13 @@ def regularize_attendance(
             "Attendance changed during correction; please retry",
         )
 
-    updated = db.attendance_logs.find_one(
-        {"_id": record["_id"]},
-        {"_id": 0},
-    )
+    updated = db.attendance_logs.find_one({"_id": record["_id"]})
+
+    if updated is None:
+        raise HTTPException(404, "Attendance record not found")
+
+    # Remove MongoDB's internal ID from the API response.
+    updated.pop("_id", None)
 
     # Convert stored timestamps to epoch milliseconds for the API.
     for field in ("punch_in", "punch_out"):
@@ -2008,7 +2024,7 @@ def explain_endpoint(
                                 },
                                 {
                                     "$cond": [
-                                        "$half_day",
+                                        {"$ifNull": ["$half_day", False]},
                                         0.5,
                                         1,
                                     ]
@@ -2226,24 +2242,37 @@ def explain_endpoint(
                     },
                 }
             },
+
             {
                 "$project": {
                     "_id": 0,
                     "department": "$_id",
-                    "employee_codes": 1,
+                    "headcount": {"$size": "$employee_codes"},
                     "present_days": 1,
                     "avg_work_hours": {
                         "$cond": [
                             {"$gt": ["$work_hours_count", 0]},
                             {
-                                "$round": [
+                                "$divide": [
                                     {
-                                        "$divide": [
-                                            "$work_hours_total",
-                                            "$work_hours_count",
-                                        ]
+                                        "$floor": {
+                                            "$add": [
+                                                {
+                                                    "$multiply": [
+                                                        {
+                                                            "$divide": [
+                                                                "$work_hours_total",
+                                                                "$work_hours_count",
+                                                            ]
+                                                        },
+                                                        100,
+                                                    ]
+                                                },
+                                                0.5,
+                                            ]
+                                        }
                                     },
-                                    2,
+                                    100,
                                 ]
                             },
                             None,
@@ -2255,6 +2284,7 @@ def explain_endpoint(
                     "on_duty_count": 1,
                 }
             },
+
             {"$sort": {"department": 1}},
         ]
 
@@ -2531,7 +2561,7 @@ def explain_endpoint(
                                             },
                                             {
                                                 "$cond": [
-                                                    {"$eq": ["$half_day", True]},
+                                                    {"$eq": [{"$ifNull": ["$half_day", False]}, True]},
                                                     0.5,
                                                     1,
                                                 ]

@@ -244,3 +244,44 @@ def test_regularization_rejects_a_correction_that_changes_nothing(api_client):
         {"emp_code": "EMP0001", "date": "2026-10-13"}
     )
     assert saved["history"] == []
+
+
+def test_regularization_succeeds_when_history_field_is_missing(api_client):
+    # Create an attendance record without a history field.
+    punch_in = datetime(2026, 10, 13, 4, 0, tzinfo=timezone.utc)
+    punch_out = datetime(2026, 10, 13, 13, 0, tzinfo=timezone.utc)
+
+    main.db.attendance_logs.insert_one(
+        {
+            "emp_code": "EMP0001",
+            "date": "2026-10-13",
+            "status": "PRESENT",
+            "punch_in": punch_in,
+            "punch_out": punch_out,
+            "work_hours": 9.0,
+            "late_minutes": 0,
+            "overtime_minutes": 0,
+            "half_day": False,
+        }
+    )
+
+    # Correct the punch-out time to reduce work hours from 9 to 8.
+    response = api_client.patch(
+        "/attendance/EMP0001/2026-10-13",
+        json={
+            "punch_out": int(
+                datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc).timestamp() * 1000
+            ),
+            "reason": "Corrected punch-out time",
+            "regularized_by": "HR Admin",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    # The correction should succeed and create an audit-history entry.
+    assert body["work_hours"] == 8.0
+    assert len(body["history"]) == 1
+    assert body["history"][0]["by"] == "HR Admin"
+    assert body["history"][0]["reason"] == "Corrected punch-out time"
