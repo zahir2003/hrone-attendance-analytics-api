@@ -8,12 +8,12 @@ A REST API built with FastAPI and MongoDB for employee management, attendance tr
 - `sample_data/` — Sample MongoDB Extended JSON documents.
 - `sample_seed.py` — Script for loading sample data.
 - `openapi.yaml` — API contract and business rules.
-- `DATA_MODEL.md` — Database schema and sample documents.
 - `test_attendance_api.py` — API behavior and validation tests.
 - `test_department_summary_mongo.py` — Department summary integration tests.
 - `test_punch_in_concurrency_mongo.py` — Concurrent punch-in tests.
 - `test_punch_out_concurrency_mongo.py` — Concurrent punch-out tests.
 - `test_regularization_concurrency_mongo.py` — Concurrent regularization tests.
+- `DATA_MODEL.md — Database schema and sample documents.`
 - `DECISIONS.md` — Technical decisions and trade-offs.
 - `REVIEW.md` — Implementation review.
 
