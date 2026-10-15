@@ -71,6 +71,14 @@ def test_department_summary_with_real_mongodb():
                     "work_hours": 8.0,
                     "late_minutes": 15,
                 },
+                {
+                    "emp_code": "TEST001",
+                    "date": "2026-10-18",
+                    "status": "PRESENT",
+                    "half_day": False,
+                    "work_hours": 8.0,
+                    "late_minutes": 20,
+                },
             ]
         )
 
@@ -96,10 +104,13 @@ def test_department_summary_with_real_mongodb():
 
         summary = items[0]
         assert summary["headcount"] == 2
+        # Only weekday attendance contributes to present_days.
         assert summary["present_days"] == 1.5
-        assert summary["avg_work_hours"] == 6.67
-        assert summary["late_count"] == 2
-        assert summary["total_late_minutes"] == 25
+
+        # Weekend records still contribute to work-hour and lateness metrics.
+        assert summary["avg_work_hours"] == 7.0
+        assert summary["late_count"] == 3
+        assert summary["total_late_minutes"] == 45
 
     finally:
         # Remove only this dedicated temporary test database.

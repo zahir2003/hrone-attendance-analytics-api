@@ -979,7 +979,6 @@ def regularize_attendance(
             "$push": {"history": history_entry},
         },
     )
-
     if result.modified_count != 1:
         raise HTTPException(
             409,
@@ -2150,26 +2149,6 @@ def explain_endpoint(
                         "$sum": {
                             "$cond": [
                                 {
-                                    "$in": [
-                                        "$logs.status",
-                                        ["PRESENT", "WFH", "ON_DUTY"],
-                                    ]
-                                },
-                                {
-                                    "$cond": [
-                                        {"$eq": ["$logs.half_day", True]},
-                                        0.5,
-                                        1,
-                                    ]
-                                },
-                                0,
-                            ]
-                        }
-                    },
-                    "work_hours_total": {
-                        "$sum": {
-                            "$cond": [
-                                {
                                     "$and": [
                                         {
                                             "$in": [
@@ -2177,10 +2156,59 @@ def explain_endpoint(
                                                 ["PRESENT", "WFH", "ON_DUTY"],
                                             ]
                                         },
-                                        {"$isNumber": "$logs.work_hours"},
+                                        {
+                                            "$cond": [
+                                                {
+                                                    "$eq": [
+                                                        {"$type": "$logs.date"},
+                                                        "string",
+                                                    ]
+                                                },
+                                                {
+                                                    "$and": [
+                                                        {
+                                                            "$gt": [
+                                                                {
+                                                                    "$dayOfWeek": {
+                                                                        "$dateFromString": {
+                                                                            "dateString": "$logs.date"
+                                                                        }
+                                                                    }
+                                                                },
+                                                                1,
+                                                            ]
+                                                        },
+                                                        {
+                                                            "$lt": [
+                                                                {
+                                                                    "$dayOfWeek": {
+                                                                        "$dateFromString": {
+                                                                            "dateString": "$logs.date"
+                                                                        }
+                                                                    }
+                                                                },
+                                                                7,
+                                                            ]
+                                                        },
+                                                    ]
+                                                },
+                                                False,
+                                            ]
+                                        },
                                     ]
                                 },
-                                "$logs.work_hours",
+                                {
+                                    "$cond": [
+                                        {
+                                            "$eq": [
+                                                {"$ifNull": ["$logs.half_day", False]},
+                                                True,
+                                            ]
+                                        },
+                                        0.5,
+                                        1,
+                                    ]
+                                },
                                 0,
                             ]
                         }
@@ -2242,7 +2270,6 @@ def explain_endpoint(
                     },
                 }
             },
-
             {
                 "$project": {
                     "_id": 0,
@@ -2284,7 +2311,6 @@ def explain_endpoint(
                     "on_duty_count": 1,
                 }
             },
-
             {"$sort": {"department": 1}},
         ]
 
